@@ -3,18 +3,35 @@
 // where skills live are yours to add.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { openGitHub } from '../src/core/github.ts';
 import { parseSkill } from '../src/core/parse.ts';
 import { replay } from '../src/core/replay.ts';
+import { scan } from '../src/core/scan.ts';
+import { openDirectory } from '../src/local.ts';
 import { atlas, CLI, EXAMPLE_COMMIT, FIXTURE } from './helpers.ts';
 
 const fixture = await atlas(['scan', FIXTURE]);
 const example = await atlas(['scan', 'github.com/JetBrains/example']);
+
+/** The names of the skills of a directory with a SKILL.md in each of these subdirectories. */
+async function skills(...directories: string[]) {
+  const repo = mkdtempSync(join(tmpdir(), 'skill-atlas-'));
+  try {
+    for (const directory of directories) {
+      mkdirSync(join(repo, directory), { recursive: true });
+      writeFileSync(join(repo, directory, 'SKILL.md'), '---\ndescription: A skill.\n---\n');
+    }
+    const result = await scan(await openDirectory(repo));
+    return result.skills.map((skill) => skill.name);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
 
 test('malformed front matter → the directory name, no description and a warning', () => {
   const parsed = parseSkill(readFileSync(join(FIXTURE, '.agents/skills/release-checklist/SKILL.md'), 'utf8'));
@@ -54,6 +71,35 @@ test('./fixture: every skill, sorted by name, linked to its file, with a warning
     ].join('\n'),
   );
   assert.match(fixture.stderr, /^warning: \.agents\/skills\/release-checklist\/SKILL\.md: malformed front matter: /);
+});
+
+test('two copies → one skill', async () => {
+  assert.deepEqual(await skills('.agents/skills/x', '.claude/skills/x'), ['x']);
+});
+
+test('agent/skills, a repository’s own folder → a skill', async () => {
+  assert.deepEqual(await skills('agent/skills/writing-lint-checks'), ['writing-lint-checks']);
+});
+
+test('shipped inside a plugin → a skill', async () => {
+  assert.deepEqual(await skills('plugins/mcp-tools/resources/skills/mps-aspect-generator'), ['mps-aspect-generator']);
+});
+
+test('test data → not a skill', async () => {
+  assert.deepEqual(await skills('integration-tests/src/jvmTest/resources/skills/weather-retrieval'), []);
+  assert.deepEqual(await skills('tests/skills/x', 'src/fixtures/skills/y'), []);
+});
+
+test('a folder whose name only contains "test", or a skill named so → still a skill', async () => {
+  assert.deepEqual(await skills('latest/skills/x', '.claude/skills/testing'), ['testing', 'x']);
+});
+
+test('the same name outside the agents\' folders → two skills', async () => {
+  assert.deepEqual(await skills('.claude/skills/x', 'plugins/a/skills/x'), ['x', 'x']);
+});
+
+test('anywhere else → not a skill', async () => {
+  assert.deepEqual(await skills('tests/x'), []);
 });
 
 test('the CLI prints the result at once and stores nothing', (t) => {
