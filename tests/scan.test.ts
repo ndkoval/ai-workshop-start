@@ -1,6 +1,5 @@
 // The decisions in spec/analysis.md and spec/cli.md, checked on what the real command prints for
-// ./fixture and for a small GitHub repository answered in tests/helpers.ts. The edge cases of
-// where skills live are yours to add.
+// ./fixture and for a small GitHub repository answered in tests/helpers.ts.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
@@ -11,6 +10,8 @@ import { test } from 'node:test';
 import { openGitHub } from '../src/core/github.ts';
 import { parseSkill } from '../src/core/parse.ts';
 import { replay } from '../src/core/replay.ts';
+import { run } from '../src/commands.ts';
+import { scan, type Source } from '../src/core/scan.ts';
 import { atlas, CLI, EXAMPLE_COMMIT, FIXTURE } from './helpers.ts';
 
 const fixture = await atlas(['scan', FIXTURE]);
@@ -91,4 +92,57 @@ test('rate limit → a message that asks for GITHUB_TOKEN', async () => {
   await assert.rejects(openGitHub('https://github.com/JetBrains/MPS', { fetch: limited }), {
     message: 'GitHub rate limit reached; set GITHUB_TOKEN',
   });
+});
+
+function source(...directories: string[]): Source {
+  const files = new Map(directories.map((directory) => [`${directory}/SKILL.md`, `---\nname: ${directory.split('/').at(-1)}\n---\n`]));
+  const repository = { id: 'JetBrains/example', organization: 'JetBrains', name: 'example', url: 'https://github.com/JetBrains/example', commit: EXAMPLE_COMMIT };
+  const read = async (path: string) => (files.has(path) ? new TextEncoder().encode(files.get(path)) : undefined);
+  return { repository, paths: [...files.keys()], warnings: [], read };
+}
+
+async function scanned(...directories: string[]) {
+  return (await scan(source(...directories))).skills;
+}
+
+async function skills(...directories: string[]) {
+  return (await scanned(...directories)).map((skill) => skill.name);
+}
+
+test('two copies → one skill, the first root wins, the other is listed as a copy', async () => {
+  assert.deepEqual(await skills('.agents/skills/mps-tests', '.claude/skills/mps-tests'), ['mps-tests']);
+  const [skill] = await scanned('.claude/skills/mps-tests', '.agents/skills/mps-tests');
+  assert.equal(skill.path, '.agents/skills/mps-tests/SKILL.md');
+  assert.deepEqual(skill.copies, ['.claude/skills/mps-tests/SKILL.md']);
+});
+
+test('an unusual folder → a skill', async () => {
+  assert.deepEqual(await skills('agent/skills/writing-lint-checks'), ['writing-lint-checks']);
+});
+
+test('part of the product → not a skill', async () => {
+  assert.deepEqual(await skills('plugins/mcp-tools/resources/skills/mps-aspect-generator'), []);
+});
+
+test('test data → not a skill', async () => {
+  assert.deepEqual(await skills('integration-tests/src/jvmTest/resources/skills/weather-retrieval'), []);
+});
+
+test('anywhere else → not a skill', async () => {
+  assert.deepEqual(await skills('tests/x'), []);
+  assert.deepEqual(await skills('docs/.claude/skills/x'), []);
+});
+
+test('a copy is printed as `also in <paths>`', async () => {
+  const lines: string[] = [];
+  const code = await run(['scan', 'x'], {
+    open: async () => source('.agents/skills/mps-tests', '.claude/skills/mps-tests'),
+    print: (text) => lines.push(text),
+    error: () => {},
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(lines.slice(-2), [
+    `  https://github.com/JetBrains/example/blob/${EXAMPLE_COMMIT}/.agents/skills/mps-tests/SKILL.md`,
+    '  also in .claude/skills/mps-tests/SKILL.md',
+  ]);
 });
