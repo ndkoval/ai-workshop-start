@@ -7,7 +7,7 @@ export type Fetch = (url: string, init?: { headers?: Record<string, string> }) =
 
 export type GitHubOptions = {
   fetch: Fetch;
-  /** With a token, skills are found through code search; without it, through the tree. */
+  /** Optional authentication for a higher GitHub API rate limit. Discovery is unchanged. */
   token?: string;
 };
 
@@ -31,53 +31,39 @@ export async function openGitHub(input: string, options: GitHubOptions): Promise
   );
   const id = info.full_name;
   const { sha } = await github.json<{ sha: string }>(`${API}/repos/${id}/commits/${encodePath(info.default_branch)}`);
-  const warnings: string[] = [];
-  const paths = options.token ? await searchPaths(github, id) : await treePaths(github, id, sha, warnings);
+  const paths = await treePaths(github, id, sha);
   const [organization, repo] = id.split('/');
   return {
     repository: { id, organization, name: repo, url: `https://github.com/${id}`, commit: sha },
     paths,
-    warnings,
+    warnings: [],
     read: (path) => github.raw(`${RAW}/${id}/${sha}/${encodePath(path)}`),
   };
 }
 
-/** Code search looks at the whole default branch, 100 results a page. */
-async function searchPaths(github: Client, id: string): Promise<string[]> {
-  const paths = new Set<string>(); // pages can repeat a result
-  // GitHub returns at most 1000 results: ten pages.
-  for (let page = 1; page <= 10; page++) {
-    const result = await github.json<{ total_count: number; items: { path: string }[] }>(
-      `${API}/search/code?q=filename:SKILL.md+repo:${id}&per_page=100&page=${page}`,
-    );
-    for (const item of result.items) paths.add(item.path);
-    if (result.items.length < 100 || page * 100 >= result.total_count) break;
-  }
-  return [...paths];
-}
-
 type Tree = { truncated: boolean; tree: { path: string; mode: string; type: string; sha: string }[] };
 
-/** The whole tree at once, or only the skill roots when it is too large for one answer. */
-async function treePaths(github: Client, id: string, sha: string, warnings: string[]): Promise<string[]> {
-  const tree = await github.json<Tree>(`${API}/repos/${id}/git/trees/${sha}?recursive=1`);
-  if (!tree.truncated) return files(tree);
-  warnings.push(`the tree is too large to list at once; looked only in ${SKILL_ROOTS.join(', ')} (GITHUB_TOKEN searches everywhere)`);
-  const paths: string[] = [];
-  for (const root of SKILL_ROOTS) {
+/** Read only the four supported roots, at the resolved commit, even in a large repository. */
+async function treePaths(github: Client, id: string, sha: string): Promise<string[]> {
+  const paths = await Promise.all(SKILL_ROOTS.map(async (root) => {
     const rootSha = await directory(github, id, sha, root);
-    if (!rootSha) continue;
-    const subtree = await github.json<Tree>(`${API}/repos/${id}/git/trees/${rootSha}?recursive=1`);
-    paths.push(...files(subtree).map((path) => `${root}/${path}`));
-  }
-  return paths;
+    if (!rootSha) return [];
+    const tree = await readTree(github, id, rootSha);
+    const skills = await Promise.all(tree.tree.filter((entry) => entry.type === 'tree').map(async (entry) => {
+      const skill = await readTree(github, id, entry.sha);
+      return skill.tree.some((file) => file.path === 'SKILL.md' && file.type === 'blob' && file.mode !== '120000')
+        ? [`${root}/${entry.path}/SKILL.md`] : [];
+    }));
+    return skills.flat();
+  }));
+  return paths.flat();
 }
 
 /** Walks down one level at a time; the directory's tree, or undefined if it does not exist. */
 async function directory(github: Client, id: string, sha: string, path: string): Promise<string | undefined> {
   let current = sha;
   for (const segment of path.split('/')) {
-    const tree = await github.json<Tree>(`${API}/repos/${id}/git/trees/${current}`);
+    const tree = await readTree(github, id, current);
     const entry = tree.tree.find((item) => item.path === segment && item.type === 'tree');
     if (!entry) return undefined;
     current = entry.sha;
@@ -85,9 +71,11 @@ async function directory(github: Client, id: string, sha: string, path: string):
   return current;
 }
 
-/** Regular files only: a symbolic link's content is its target, not a SKILL.md. */
-function files(tree: Tree): string[] {
-  return tree.tree.filter((item) => item.type === 'blob' && item.mode !== '120000').map((item) => item.path);
+/** Never silently report a partial listing as a complete scan. */
+async function readTree(github: Client, id: string, sha: string): Promise<Tree> {
+  const tree = await github.json<Tree>(`${API}/repos/${id}/git/trees/${sha}`);
+  if (tree.truncated) throw new AtlasError(`GitHub returned an incomplete directory listing for ${id}; scan a local checkout instead`);
+  return tree;
 }
 
 type Client = ReturnType<typeof client>;
