@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Skill Atlas</title>
+  <style>
+    :root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db55; --accent: #2563eb; --error: #dc2626; }
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 52rem; margin: 3rem auto; padding: 0 1rem; }
+    h1 { margin: 0 0 .25rem; }
+    .tagline, .meta, .path, .copies { color: var(--muted); }
+    form { display: flex; gap: .5rem; margin: 1.5rem 0; }
+    input { flex: 1; font: inherit; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: .375rem; }
+    button { font: inherit; padding: .5rem 1rem; border: 0; border-radius: .375rem; background: var(--accent); color: white; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: progress; }
+    #status.error { color: var(--error); }
+    ul { list-style: none; padding: 0; }
+    #skills li { padding: .75rem 0; border-top: 1px solid var(--line); }
+    #skills h2 { font-size: 1.05rem; margin: 0; }
+    #skills p { margin: .25rem 0; }
+    .path, .copies { font-size: .85rem; overflow-wrap: anywhere; }
+    #warnings li { color: var(--muted); font-size: .85rem; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <h1>Skill Atlas</h1>
+  <div class="tagline">Every agent skill in a GitHub repository.</div>
+  <form>
+    <input name="url" type="text" required autofocus placeholder="https://github.com/JetBrains/kotlin" aria-label="GitHub repository URL">
+    <button type="submit">Scan</button>
+  </form>
+  <div id="status" role="status"></div>
+  <ul id="skills"></ul>
+  <ul id="warnings"></ul>
+  <script type="module">
+    const form = document.querySelector('form');
+    const input = form.elements.url;
+    const button = form.querySelector('button');
+    const status = document.querySelector('#status');
+    const skills = document.querySelector('#skills');
+    const warnings = document.querySelector('#warnings');
+
+    /** An element with text content only: what GitHub returns is never parsed as HTML. */
+    function element(tag, text, attributes = {}) {
+      const node = Object.assign(document.createElement(tag), attributes);
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function show(message, isError = false) {
+      status.className = isError ? 'error' : '';
+      status.replaceChildren(message);
+    }
+
+    async function scanRepository(url) {
+      skills.replaceChildren();
+      warnings.replaceChildren();
+      show('Scanning…');
+      button.disabled = true;
+      try {
+        const response = await fetch(`api/scan?url=${encodeURIComponent(url)}`);
+        const answer = await response.json();
+        if (!response.ok) return show(answer.error, true);
+        render(answer);
+      } catch (error) {
+        show(`Cannot reach Skill Atlas: ${error.message}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function render({ repository, skills: found, warnings: notes }) {
+      const summary = element('span');
+      summary.append(
+        element('a', repository.id, { href: repository.url }),
+        ` · ${found.length} ${found.length === 1 ? 'skill' : 'skills'}`,
+        element('span', ` at ${repository.commit.slice(0, 7)}`, { className: 'meta' }),
+      );
+      show(summary);
+      for (const skill of found) {
+        const item = element('li');
+        const title = element('h2');
+        title.append(element('a', skill.name, { href: skill.link }));
+        item.append(title);
+        if (skill.description) item.append(element('p', skill.description));
+        item.append(element('div', skill.path, { className: 'path' }));
+        if (skill.copies.length > 0) item.append(element('div', `also in ${skill.copies.join(', ')}`, { className: 'copies' }));
+        skills.append(item);
+      }
+      for (const note of notes) warnings.append(element('li', `warning: ${note}`));
+    }
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const url = input.value.trim();
+      // The scanned URL stays in the address bar, so a scan can be shared.
+      history.pushState(null, '', `?url=${encodeURIComponent(url)}`);
+      scanRepository(url);
+    });
+
+    function fromAddress() {
+      const url = new URLSearchParams(location.search).get('url');
+      if (url) { input.value = url; scanRepository(url); }
+    }
+    addEventListener('popstate', fromAddress);
+    fromAddress();
+  </script>
+</body>
+</html>

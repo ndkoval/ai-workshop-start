@@ -22,6 +22,11 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npx playwright install --with-deps chromium-headless-shell
+      - run: npm run test:browser
+      - run: npm run test:e2e
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       # The real CLI on the fixture repository, as a user would run it: it must exit 0.
       - name: Smoke test
         run: |

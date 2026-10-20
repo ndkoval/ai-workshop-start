@@ -9,3 +9,4 @@ Integration tests for every case in the spec.
 ## Commands
 - `npm ci`: first, in a fresh checkout
 - `npm test`: the tests
+- `npm run test:browser`: the web page in headless Chromium; `npx playwright install chromium-headless-shell` once

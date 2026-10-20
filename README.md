@@ -13,7 +13,13 @@ build-tools-bump-gradle-api — Bumps the Gradle API version that Kotlin Gradle 
 …
 ```
 
-Set `GITHUB_TOKEN` for a higher GitHub rate limit. `npm test` runs the tests.
+Or in the browser: `./skill-atlas serve` opens http://localhost:3000, where you paste a
+GitHub URL and press *Scan* ([spec/web.md](spec/web.md)).
+
+Set `GITHUB_TOKEN` for a higher GitHub rate limit. `npm test` runs the offline
+tests; `npm run test:browser` drives the web page in headless Chromium (once:
+`npx playwright install chromium-headless-shell`); `GITHUB_TOKEN=… npm run test:e2e` compares fixed-commit scans of three
+real JetBrains repositories with checked-in snapshots.
 
 - [spec/](spec/): what it does. [AGENTS.md](AGENTS.md): the definition of done.
 - [fixture/](fixture/README.md): a small repository for the tests.

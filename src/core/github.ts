@@ -13,11 +13,14 @@ export type GitHubOptions = {
 
 const API = 'https://api.github.com';
 const RAW = 'https://raw.githubusercontent.com';
+const PRODUCT_ROOTS = ['plugins/mcp-tools/resources'];
 
-/** `https://github.com/owner/repo`, with or without the scheme, a trailing slash or `.git`. */
-export function parseGitHubUrl(input: string): { owner: string; repo: string } | undefined {
-  const match = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i.exec(input.trim());
-  return match ? { owner: match[1], repo: match[2] } : undefined;
+/** A GitHub repository, optionally pinned with `/tree/<40-character commit>`. */
+export function parseGitHubUrl(input: string): { owner: string; repo: string; commit?: string } | undefined {
+  const match = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/tree\/([0-9a-f]{40}))?\/?$/i.exec(
+    input.trim(),
+  );
+  return match ? { owner: match[1], repo: match[2], commit: match[3] } : undefined;
 }
 
 /** Resolves the default branch to a commit and lists the files that may be skills. */
@@ -30,9 +33,10 @@ export async function openGitHub(input: string, options: GitHubOptions): Promise
     `Repository not found: https://github.com/${name.owner}/${name.repo}`,
   );
   const id = info.full_name;
-  const { sha } = await github.json<{ sha: string }>(`${API}/repos/${id}/commits/${encodePath(info.default_branch)}`);
+  const { sha } = await github.json<{ sha: string }>(`${API}/repos/${id}/commits/${encodePath(name.commit ?? info.default_branch)}`);
   const warnings: string[] = [];
-  const paths = options.token ? await searchPaths(github, id) : await treePaths(github, id, sha, warnings);
+  // Code search only sees the default branch, so a pinned commit always uses its tree.
+  const paths = options.token && !name.commit ? await searchPaths(github, id, warnings) : await treePaths(github, id, sha, warnings);
   const [organization, repo] = id.split('/');
   return {
     repository: { id, organization, name: repo, url: `https://github.com/${id}`, commit: sha },
@@ -43,13 +47,14 @@ export async function openGitHub(input: string, options: GitHubOptions): Promise
 }
 
 /** Code search looks at the whole default branch, 100 results a page. */
-async function searchPaths(github: Client, id: string): Promise<string[]> {
+async function searchPaths(github: Client, id: string, warnings: string[]): Promise<string[]> {
   const paths = new Set<string>(); // pages can repeat a result
   // GitHub returns at most 1000 results: ten pages.
   for (let page = 1; page <= 10; page++) {
     const result = await github.json<{ total_count: number; items: { path: string }[] }>(
       `${API}/search/code?q=filename:SKILL.md+repo:${id}&per_page=100&page=${page}`,
     );
+    if (page === 1 && result.total_count > 1000) warnings.push('GitHub code search found over 1,000 files; only the first 1,000 were scanned');
     for (const item of result.items) paths.add(item.path);
     if (result.items.length < 100 || page * 100 >= result.total_count) break;
   }
@@ -58,19 +63,19 @@ async function searchPaths(github: Client, id: string): Promise<string[]> {
 
 type Tree = { truncated: boolean; tree: { path: string; mode: string; type: string; sha: string }[] };
 
-/** The whole tree at once, or only the skill roots when it is too large for one answer. */
+/** The whole tree at once, or the known project-skill roots when it is truncated. */
 async function treePaths(github: Client, id: string, sha: string, warnings: string[]): Promise<string[]> {
   const tree = await github.json<Tree>(`${API}/repos/${id}/git/trees/${sha}?recursive=1`);
   if (!tree.truncated) return files(tree);
-  warnings.push(`the tree is too large to list at once; looked only in ${SKILL_ROOTS.join(', ')} (GITHUB_TOKEN searches everywhere)`);
-  const paths: string[] = [];
-  for (const root of SKILL_ROOTS) {
-    const rootSha = await directory(github, id, sha, root);
-    if (!rootSha) continue;
-    const subtree = await github.json<Tree>(`${API}/repos/${id}/git/trees/${rootSha}?recursive=1`);
-    paths.push(...files(subtree).map((path) => `${root}/${path}`));
-  }
-  return paths;
+  const roots = [...SKILL_ROOTS, ...PRODUCT_ROOTS];
+  warnings.push(`the tree is too large to list at once; looked only in ${roots.join(', ')} (GITHUB_TOKEN searches everywhere)`);
+  const paths = await Promise.all(
+    roots.map(async (root) => {
+      const rootSha = await directory(github, id, sha, root);
+      return rootSha ? (await completeTree(github, id, rootSha)).map((path) => `${root}/${path}`) : [];
+    }),
+  );
+  return paths.flat();
 }
 
 /** Walks down one level at a time; the directory's tree, or undefined if it does not exist. */
@@ -85,6 +90,21 @@ async function directory(github: Client, id: string, sha: string, path: string):
   return current;
 }
 
+/** Completes a known root even if that root is itself too large for one recursive answer. */
+async function completeTree(github: Client, id: string, sha: string, prefix = ''): Promise<string[]> {
+  const tree = await github.json<Tree>(`${API}/repos/${id}/git/trees/${sha}?recursive=1`);
+  if (!tree.truncated) return files(tree).map((path) => `${prefix}${path}`);
+  const direct = await github.json<Tree>(`${API}/repos/${id}/git/trees/${sha}`);
+  const paths = await Promise.all(
+    direct.tree.map((entry) => {
+      const path = `${prefix}${entry.path}`;
+      if (entry.type === 'blob') return entry.mode === '120000' ? [] : [path];
+      return entry.type === 'tree' ? completeTree(github, id, entry.sha, `${path}/`) : [];
+    }),
+  );
+  return paths.flat();
+}
+
 /** Regular files only: a symbolic link's content is its target, not a SKILL.md. */
 function files(tree: Tree): string[] {
   return tree.tree.filter((item) => item.type === 'blob' && item.mode !== '120000').map((item) => item.path);
@@ -95,7 +115,7 @@ type Client = ReturnType<typeof client>;
 function client({ fetch, token }: GitHubOptions) {
   const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const answers = new Map<string, Promise<unknown>>(); // the root tree is asked for once per skill root
+  const answers = new Map<string, Promise<unknown>>(); // repeated tree requests share one answer
 
   async function get(url: string, init?: { headers: Record<string, string> }): Promise<Response> {
     try {
