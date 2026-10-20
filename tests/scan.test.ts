@@ -44,13 +44,18 @@ test('./fixture: every skill, sorted by name, linked to its file, with a warning
   assert.equal(
     fixture.stdout,
     [
-      'fixture · 3 skills',
+      'fixture · 5 skills',
       "code-style — Follow the project's code style.",
       `  ${root}/.github/skills/code-style/SKILL.md`,
       'commits — Write commit messages the way this repository does.',
-      `  ${root}/.claude/skills/commits/SKILL.md`,
+      `  ${root}/.agents/skills/commits/SKILL.md`,
+      `  also in .claude/skills/commits/SKILL.md`,
+      'mps-aspect-generator — Generate MPS aspect code from a high-level description.',
+      `  ${root}/plugins/mcp-tools/resources/skills/mps-aspect-generator/SKILL.md`,
       'release-checklist',
       `  ${root}/.agents/skills/release-checklist/SKILL.md`,
+      'writing-lint-checks — Write Android lint checks following the project conventions.',
+      `  ${root}/agent/skills/writing-lint-checks/SKILL.md`,
     ].join('\n'),
   );
   assert.match(fixture.stderr, /^warning: \.agents\/skills\/release-checklist\/SKILL\.md: malformed front matter: /);
@@ -79,6 +84,32 @@ test('unreachable repository → a clear message, exit code 1', async () => {
   const offline = await atlas(['scan', 'https://github.com/JetBrains/not-answered']);
   assert.equal(offline.code, 1);
   assert.match(offline.stderr, /^Cannot reach GitHub: not recorded: https:\/\/api\.github\.com\/repos\/JetBrains\/not-answered$/);
+});
+
+test('duplicates in .agents and .claude — the same skill, one copy per agent', () => {
+  const root = pathToFileURL(FIXTURE).href;
+  // "commits" exists in both .agents/skills/commits and .claude/skills/commits.
+  // The first by path (.agents) is kept; .claude is listed as a copy.
+  assert.match(fixture.stdout, /commits — Write commit messages the way this repository does\./);
+  assert.match(fixture.stdout, /also in \.claude\/skills\/commits\/SKILL\.md/);
+  // Only one "commits" skill is counted (5 total, not 6).
+  assert.match(fixture.stdout, /fixture · 5 skills/);
+});
+
+test('agent/skills/ — the repository own workflow directory is a valid skill root', () => {
+  const root = pathToFileURL(FIXTURE).href;
+  assert.match(fixture.stdout, /writing-lint-checks — Write Android lint checks following the project conventions\./);
+  assert.match(fixture.stdout, new RegExp(`${root}/agent/skills/writing-lint-checks/SKILL\\.md`));
+});
+
+test('plugins/.../skills/ — a skill shipped inside a plugin is discovered', () => {
+  const root = pathToFileURL(FIXTURE).href;
+  assert.match(fixture.stdout, /mps-aspect-generator — Generate MPS aspect code from a high-level description\./);
+  assert.match(fixture.stdout, new RegExp(`${root}/plugins/mcp-tools/resources/skills/mps-aspect-generator/SKILL\\.md`));
+});
+
+test('integration-tests/.../src/jvmTest/resources/skills/ — test fixture SKILL.md is excluded', () => {
+  assert.doesNotMatch(fixture.stdout, /weather-retrieval/);
 });
 
 test('rate limit → a message that asks for GITHUB_TOKEN', async () => {
