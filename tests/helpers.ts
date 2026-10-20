@@ -27,13 +27,16 @@ const EXAMPLE: Recording = {
 
 const github = replay(EXAMPLE);
 
+/** JetBrains/example and anything else not recorded, as GitHub answers them in EXAMPLE. */
+export const openExample = (input: string) => openGitHub(input, { fetch: github, token: 'test' });
+
 /** `skill-atlas <args>`, as the CLI runs it, with GitHub answering from EXAMPLE. */
 export async function atlas(args: string[]) {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const code = await run(args, {
     // With a token, through code search, as EXAMPLE answers it.
-    open: (input) => (parseGitHubUrl(input) ? openGitHub(input, { fetch: github, token: 'test' }) : openDirectory(input)),
+    open: (input) => (parseGitHubUrl(input) ? openExample(input) : openDirectory(input)),
     print: (text) => stdout.push(text),
     error: (text) => stderr.push(text),
   });

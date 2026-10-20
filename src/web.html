@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skill Atlas</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; --muted: #888; --accent: #2f6fde; font-family: system-ui, sans-serif; }
+  body { margin: 0; display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  form { display: flex; gap: 8px; align-items: center; }
+  h1 { font-size: 18px; margin: 0 16px 0 0; white-space: nowrap; }
+  input { flex: 1; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  #status:empty, #warnings:empty { display: none; }
+  #status { margin: 8px 0 0; }
+  #status.error { color: #d33; }
+  #warnings { margin: 8px 0 0; padding-left: 20px; color: #b80; font-size: 13px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  nav { width: 340px; overflow: auto; border-right: 1px solid var(--line); }
+  nav h2 { font-size: 14px; margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  nav ul { list-style: none; margin: 0; padding: 0; }
+  nav li button { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; color: inherit; padding: 8px 16px; }
+  nav li button[aria-current="true"] { background: #2f6fde22; }
+  nav li b { display: block; }
+  nav li span { font-size: 13px; color: var(--muted); }
+  article { flex: 1; overflow: auto; padding: 16px 24px; }
+  article:empty { display: none; }
+  article h2 { margin: 0 0 8px; }
+  article a { color: var(--accent); word-break: break-all; }
+  .copies { font-size: 13px; color: var(--muted); }
+  pre { padding: 12px; border: 1px solid var(--line); border-radius: 6px; white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <form id="scan">
+    <h1>Skill Atlas</h1>
+    <input id="repository" name="repository" type="text" required autofocus
+           placeholder="https://github.com/JetBrains/kotlin" aria-label="GitHub repository URL">
+    <button id="submit" type="submit">Scan</button>
+  </form>
+  <p id="status" role="status"></p>
+  <ul id="warnings"></ul>
+</header>
+<main>
+  <nav id="skills" hidden><h2 id="title"></h2><ul id="list"></ul></nav>
+  <article id="skill"></article>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const element = (tag, text) => Object.assign(document.createElement(tag), text === undefined ? {} : { textContent: text });
+  const firstSentence = (text) => {
+    const line = text.replace(/\s+/g, ' ').trim();
+    return /^.*?[.!?](?=\s|$)/.exec(line)?.[0] ?? line;
+  };
+
+  async function scan(repository) {
+    $('repository').value = repository;
+    history.replaceState(null, '', `?repository=${encodeURIComponent(repository)}`);
+    $('submit').disabled = true;
+    $('status').className = '';
+    $('status').textContent = `Scanning ${repository}…`;
+    $('warnings').replaceChildren();
+    $('skills').hidden = true;
+    $('skill').replaceChildren();
+    try {
+      const response = await fetch(`/api/scan?repository=${encodeURIComponent(repository)}`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      show(result);
+    } catch (error) {
+      $('status').className = 'error';
+      $('status').textContent = error.message;
+    } finally {
+      $('submit').disabled = false;
+    }
+  }
+
+  function show({ repository, skills, warnings }) {
+    $('status').textContent = '';
+    $('warnings').replaceChildren(...warnings.map((warning) => element('li', `warning: ${warning}`)));
+    $('title').textContent = `${repository.id} · ${skills.length} ${skills.length === 1 ? 'skill' : 'skills'}`;
+    $('list').replaceChildren(...skills.map((skill) => {
+      const button = element('button');
+      button.type = 'button';
+      button.dataset.id = skill.id;
+      button.append(element('b', skill.name), element('span', firstSentence(skill.description)));
+      button.onclick = () => select(skill);
+      const item = element('li');
+      item.append(button);
+      return item;
+    }));
+    $('skills').hidden = false;
+    if (skills.length > 0) select(skills[0]);
+  }
+
+  function select(skill) {
+    for (const button of $('list').querySelectorAll('button')) {
+      button.setAttribute('aria-current', String(button.dataset.id === skill.id));
+    }
+    const link = element('a', skill.link);
+    link.href = skill.link;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    const parts = [element('h2', skill.name)];
+    if (skill.description) parts.push(element('p', skill.description));
+    parts.push(link);
+    if (skill.copies.length > 0) parts.push(Object.assign(element('p', `also in ${skill.copies.join(', ')}`), { className: 'copies' }));
+    parts.push(element('pre', skill.content));
+    $('skill').replaceChildren(...parts);
+  }
+
+  $('scan').onsubmit = (event) => {
+    event.preventDefault();
+    scan($('repository').value.trim());
+  };
+  const requested = new URLSearchParams(location.search).get('repository');
+  if (requested) scan(requested);
+</script>
+</body>
+</html>
